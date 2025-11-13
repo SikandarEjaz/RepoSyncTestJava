@@ -1,0 +1,38 @@
+name: Sync to Python Repo
+
+on:
+  push:
+    paths:
+      - 'sync-folder/**'  # Only trigger when files in sync-folder change
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Java Repo
+        uses: actions/checkout@v4
+        with:
+          path: java-repo
+          
+      - name: Checkout Python Repo
+        uses: actions/checkout@v4
+        with:
+          repository: YOUR_USERNAME/YOUR_PYTHON_REPO_NAME
+          token: ${{ secrets.SYNC_TOKEN }}
+          path: python-repo
+          
+      - name: Sync files
+        run: |
+          # Copy files from Java repo to Python repo
+          mkdir -p python-repo/synced-from-java
+          cp -r java-repo/sync-folder/* python-repo/synced-from-java/
+          
+      - name: Commit and Push to Python Repo
+        run: |
+          cd python-repo
+          git config user.name "GitHub Action"
+          git config user.email "action@github.com"
+          git add .
+          git diff --quiet && git diff --staged --quiet || git commit -m "Sync from Java repo [automated]"
+          git push
