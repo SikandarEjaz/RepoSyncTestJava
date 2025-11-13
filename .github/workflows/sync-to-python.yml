@@ -3,7 +3,7 @@ name: Sync to Python Repo
 on:
   push:
     paths:
-      - 'sync-folder/**'  # Only trigger when files in sync-folder change
+      - 'sync_folder/**'  # Only trigger when files in sync-folder change
   workflow_dispatch:  # Allow manual trigger
 
 jobs:
