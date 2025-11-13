@@ -18,7 +18,7 @@ jobs:
       - name: Checkout Python Repo
         uses: actions/checkout@v4
         with:
-          repository: YOUR_USERNAME/YOUR_PYTHON_REPO_NAME
+          repository: SikandarEjaz/RepoSyncTestPython.git
           token: ${{ secrets.SYNC_TOKEN }}
           path: python-repo
           
