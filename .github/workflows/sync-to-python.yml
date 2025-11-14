@@ -2,9 +2,11 @@ name: Sync to Python Repo
 
 on:
   push:
+    branches:
+      - main 
     paths:
-      - 'sync_folder/**'  # Only trigger when files in sync_folder change
-  workflow_dispatch:  # Allow manual trigger
+      - 'sync_folder/**'  # Only trigger when files in sync_folder change. More foldes and files can be added later.
+  workflow_dispatch: 
 
 jobs:
   sync:
@@ -26,7 +28,11 @@ jobs:
         run: |
           # Copy files from Java repo to Python repo
           mkdir -p python-repo/synced-from-java
-          cp -r java-repo/sync_folder/* python-repo/synced-from-java/
+          if [ -d "java-repo/sync_folder" ] && [ "$(ls -A java-repo/sync_folder)" ]; then
+            cp -r java-repo/sync_folder/* python-repo/synced-from-java/
+          else
+            echo "sync_folder is empty or doesn't exist"
+          fi
 
       - name: Commit and Push to Python Repo
         run: |
