@@ -1,12 +1,12 @@
-name: Sync to Python Repo
+name: Sync to Python Repo with Java-to-Python Translation
 
 on:
   push:
     branches:
-      - main 
+      - main
     paths:
-      - 'sync_folder/**'  # Only trigger when files in sync_folder change. More foldes and files can be added later.
-  workflow_dispatch: 
+      - 'sync_folder/**'
+  workflow_dispatch:
 
 jobs:
   sync:
@@ -24,15 +24,216 @@ jobs:
           token: ${{ secrets.SYNC_TOKEN }}
           path: python-repo
 
-      - name: Sync files
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install ANTLR4
         run: |
-          # Copy files from Java repo to Python repo
+          cd /usr/local/lib
+          sudo curl -O https://www.antlr.org/download/antlr-4.13.1-complete.jar
+          echo 'export CLASSPATH=".:/usr/local/lib/antlr-4.13.1-complete.jar:$CLASSPATH"' >> ~/.bashrc
+          echo 'alias antlr4="java -jar /usr/local/lib/antlr-4.13.1-complete.jar"' >> ~/.bashrc
+          echo 'alias grun="java org.antlr.v4.gui.TestRig"' >> ~/.bashrc
+          source ~/.bashrc
+          pip install antlr4-python3-runtime
+
+      - name: Download Java Grammar
+        run: |
+          mkdir -p parser
+          cd parser
+          # Download official Java grammar from ANTLR
+          curl -O https://raw.githubusercontent.com/antlr/grammars-v4/master/java/java20/Java20Lexer.g4
+          curl -O https://raw.githubusercontent.com/antlr/grammars-v4/master/java/java20/Java20Parser.g4
+
+      - name: Generate ANTLR Parser
+        run: |
+          cd parser
+          java -jar /usr/local/lib/antlr-4.13.1-complete.jar -Dlanguage=Python3 Java20Lexer.g4 Java20Parser.g4
+
+      - name: Create Java-to-Python Translator
+        run: |
+          cat > translator.py << 'TRANSLATOR_EOF'
+          import sys
+          import os
+          from antlr4 import *
+          from parser.Java20Lexer import Java20Lexer
+          from parser.Java20Parser import Java20Parser
+          from parser.Java20ParserListener import Java20ParserListener
+
+          class JavaToPythonTranslator(Java20ParserListener):
+              def __init__(self):
+                  self.indent_level = 0
+                  self.output = []
+                  self.current_class = None
+                  self.in_method = False
+                  
+              def get_indent(self):
+                  return "    " * self.indent_level
+              
+              def enterClassDeclaration(self, ctx):
+                  # Get class name
+                  class_name = ctx.normalClassDeclaration().typeIdentifier().getText()
+                  self.current_class = class_name
+                  self.output.append(f"class {class_name}:")
+                  self.indent_level += 1
+                  
+              def exitClassDeclaration(self, ctx):
+                  self.indent_level -= 1
+                  self.output.append("")
+                  
+              def enterFieldDeclaration(self, ctx):
+                  # Handle field declarations
+                  field_type = ctx.unannType().getText()
+                  variables = ctx.variableDeclaratorList().variableDeclarator()
+                  
+                  for var in variables:
+                      var_name = var.variableDeclaratorId().getText()
+                      if var.variableInitializer():
+                          init_value = var.variableInitializer().getText()
+                          self.output.append(f"{self.get_indent()}{var_name} = {init_value}  # {field_type}")
+                      else:
+                          self.output.append(f"{self.get_indent()}{var_name} = None  # {field_type}")
+              
+              def enterMethodDeclaration(self, ctx):
+                  self.in_method = True
+                  method_header = ctx.methodHeader()
+                  method_name = method_header.methodDeclarator().identifier().getText()
+                  
+                  # Get parameters
+                  params = ["self"]
+                  if method_header.methodDeclarator().receiverParameter():
+                      formal_params = method_header.methodDeclarator().receiverParameter()
+                  
+                  formal_param_list = method_header.methodDeclarator().formalParameterList()
+                  if formal_param_list:
+                      for param in formal_param_list.formalParameter():
+                          param_name = param.variableDeclaratorId().getText()
+                          params.append(param_name)
+                  
+                  params_str = ", ".join(params)
+                  self.output.append(f"{self.get_indent()}def {method_name}({params_str}):")
+                  self.indent_level += 1
+                  
+              def exitMethodDeclaration(self, ctx):
+                  # Check if method body is empty
+                  if self.output[-1].strip().endswith(":"):
+                      self.output.append(f"{self.get_indent()}pass")
+                  self.indent_level -= 1
+                  self.output.append("")
+                  self.in_method = False
+              
+              def enterConstructorDeclaration(self, ctx):
+                  self.in_method = True
+                  # Get constructor parameters
+                  params = ["self"]
+                  constructor_declarator = ctx.constructorDeclarator()
+                  formal_param_list = constructor_declarator.formalParameterList()
+                  
+                  if formal_param_list:
+                      for param in formal_param_list.formalParameter():
+                          param_name = param.variableDeclaratorId().getText()
+                          params.append(param_name)
+                  
+                  params_str = ", ".join(params)
+                  self.output.append(f"{self.get_indent()}def __init__({params_str}):")
+                  self.indent_level += 1
+                  
+              def exitConstructorDeclaration(self, ctx):
+                  if self.output[-1].strip().endswith(":"):
+                      self.output.append(f"{self.get_indent()}pass")
+                  self.indent_level -= 1
+                  self.output.append("")
+                  self.in_method = False
+              
+              def enterStatement(self, ctx):
+                  if self.in_method:
+                      statement_text = ctx.getText()
+                      # Basic statement translation
+                      if "System.out.println" in statement_text:
+                          # Extract content inside println
+                          content = statement_text.replace("System.out.println(", "").replace(");", "").replace(")", "")
+                          self.output.append(f"{self.get_indent()}print({content})")
+                      elif "return" in statement_text:
+                          return_value = statement_text.replace("return", "").replace(";", "").strip()
+                          self.output.append(f"{self.get_indent()}return {return_value}")
+              
+              def get_python_code(self):
+                  # Add a default __init__ if no constructor was defined
+                  result = "\n".join(self.output)
+                  if self.current_class and "__init__" not in result:
+                      lines = result.split("\n")
+                      # Find where to insert __init__
+                      for i, line in enumerate(lines):
+                          if line.startswith("class "):
+                              lines.insert(i + 1, "    def __init__(self):")
+                              lines.insert(i + 2, "        pass")
+                              break
+                      result = "\n".join(lines)
+                  return result
+
+          def translate_java_to_python(java_file_path):
+              with open(java_file_path, 'r') as f:
+                  java_code = f.read()
+              
+              input_stream = InputStream(java_code)
+              lexer = Java20Lexer(input_stream)
+              token_stream = CommonTokenStream(lexer)
+              parser = Java20Parser(token_stream)
+              tree = parser.compilationUnit()
+              
+              translator = JavaToPythonTranslator()
+              walker = ParseTreeWalker()
+              walker.walk(translator, tree)
+              
+              return translator.get_python_code()
+
+          if __name__ == "__main__":
+              if len(sys.argv) != 3:
+                  print("Usage: python translator.py <input_java_file> <output_python_file>")
+                  sys.exit(1)
+              
+              input_file = sys.argv[1]
+              output_file = sys.argv[2]
+              
+              python_code = translate_java_to_python(input_file)
+              
+              with open(output_file, 'w') as f:
+                  f.write(python_code)
+              
+              print(f"Translated {input_file} to {output_file}")
+          TRANSLATOR_EOF
+
+      - name: Translate Java files to Python
+        run: |
           mkdir -p python-repo/synced-from-java
-          if [ -d "java-repo/sync_folder" ] && [ "$(ls -A java-repo/sync_folder)" ]; then
-            cp -r java-repo/sync_folder/* python-repo/synced-from-java/
-          else
-            echo "sync_folder is empty or doesn't exist"
-          fi
+          
+          # Find all Java files in sync_folder
+          find java-repo/sync_folder -name "*.java" | while read java_file; do
+            # Get relative path and convert to Python filename
+            rel_path=$(realpath --relative-to=java-repo/sync_folder "$java_file")
+            python_file="python-repo/synced-from-java/${rel_path%.java}.py"
+            
+            # Create directory if needed
+            mkdir -p "$(dirname "$python_file")"
+            
+            # Translate
+            echo "Translating: $java_file -> $python_file"
+            python translator.py "$java_file" "$python_file" || echo "Translation failed for $java_file"
+          done
+          
+          # Also copy non-Java files as before
+          find java-repo/sync_folder -type f ! -name "*.java" | while read file; do
+            rel_path=$(realpath --relative-to=java-repo/sync_folder "$file")
+            cp "$file" "python-repo/synced-from-java/$rel_path"
+          done
 
       - name: Commit and Push to Python Repo
         run: |
@@ -40,5 +241,5 @@ jobs:
           git config user.name "GitHub Action"
           git config user.email "action@github.com"
           git add .
-          git diff --quiet && git diff --staged --quiet || git commit -m "Sync from Java repo [automated]"
+          git diff --quiet && git diff --staged --quiet || git commit -m "Sync from Java repo with translation [automated]"
           git push
